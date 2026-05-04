@@ -282,6 +282,7 @@ impl OpenAiLanguageModel {
                 &api_url,
                 &api_key,
                 request,
+                vec![],
             );
             let response = request.await?;
             Ok(response)
@@ -330,7 +331,8 @@ impl LanguageModel for OpenAiLanguageModel {
             | Model::FivePointFive
             | Model::FivePointFivePro
             | Model::O1
-            | Model::O3 => true,
+            | Model::O3
+            | Model::O4Mini => true,
             Model::ThreePointFiveTurbo | Model::Four | Model::FourTurbo | Model::O3Mini => false,
             Model::Custom {
                 supports_images, ..

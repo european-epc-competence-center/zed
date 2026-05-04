@@ -291,6 +291,125 @@ impl HttpClient for HttpClientWithUrl {
     }
 }
 
+fn html_escape(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' => output.push_str("&quot;"),
+            '\'' => output.push_str("&#x27;"),
+            _ => output.push(ch),
+        }
+    }
+    output
+}
+
+/// Generate a styled HTML page for OAuth callback responses.
+///
+/// Returns a complete HTML document (no HTTP headers) with a centered card
+/// layout styled to match Zed's dark theme. The `title` is rendered as a
+/// heading and `message` as body text below it.
+///
+/// When `is_error` is true, a red X icon is shown instead of the green
+/// checkmark.
+pub fn oauth_callback_page(title: &str, message: &str, is_error: bool) -> String {
+    let title = html_escape(title);
+    let message = html_escape(message);
+    let (icon_bg, icon_svg) = if is_error {
+        (
+            "#f38ba8",
+            r#"<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>"#,
+        )
+    } else {
+        (
+            "#a6e3a1",
+            r#"<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>"#,
+        )
+    };
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} — Zed</title>
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    background: #1e1e2e;
+    color: #cdd6f4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 1rem;
+  }}
+  .card {{
+    background: #313244;
+    border-radius: 12px;
+    padding: 2.5rem;
+    max-width: 420px;
+    width: 100%;
+    text-align: center;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+  }}
+  .icon {{
+    width: 48px;
+    height: 48px;
+    margin: 0 auto 1.5rem;
+    background: {icon_bg};
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }}
+  .icon svg {{
+    width: 24px;
+    height: 24px;
+    stroke: #1e1e2e;
+    stroke-width: 3;
+    fill: none;
+  }}
+  h1 {{
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+    color: #cdd6f4;
+  }}
+  p {{
+    font-size: 0.925rem;
+    line-height: 1.5;
+    color: #a6adc8;
+  }}
+  .brand {{
+    margin-top: 1.5rem;
+    font-size: 0.8rem;
+    color: #585b70;
+    letter-spacing: 0.05em;
+  }}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">
+    {icon_svg}
+  </div>
+  <h1>{title}</h1>
+  <p>{message}</p>
+  <div class="brand">Zed</div>
+</div>
+</body>
+</html>"#,
+        title = title,
+        message = message,
+        icon_bg = icon_bg,
+        icon_svg = icon_svg,
+    )
+}
+
 pub fn read_proxy_from_env() -> Option<Url> {
     const ENV_VARS: &[&str] = &[
         "ALL_PROXY",
@@ -443,3 +562,204 @@ impl HttpClient for FakeHttpClient {
         self
     }
 }
+
+// ---------------------------------------------------------------------------
+// Shared OAuth callback server (non-wasm only)
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_family = "wasm"))]
+mod oauth_callback_server {
+    use super::*;
+    use anyhow::Context as _;
+    use std::str::FromStr;
+    use std::time::Duration;
+
+    /// Parsed OAuth callback parameters from the authorization server redirect.
+    pub struct OAuthCallbackParams {
+        pub code: String,
+        pub state: String,
+    }
+
+    impl OAuthCallbackParams {
+        /// Parse the query string from a callback URL like
+        /// `http://127.0.0.1:<port>/callback?code=...&state=...`.
+        pub fn parse_query(query: &str) -> Result<Self> {
+            let mut code: Option<String> = None;
+            let mut state: Option<String> = None;
+            let mut error: Option<String> = None;
+            let mut error_description: Option<String> = None;
+
+            for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+                match key.as_ref() {
+                    "code" => {
+                        if !value.is_empty() {
+                            code = Some(value.into_owned());
+                        }
+                    }
+                    "state" => {
+                        if !value.is_empty() {
+                            state = Some(value.into_owned());
+                        }
+                    }
+                    "error" => {
+                        if !value.is_empty() {
+                            error = Some(value.into_owned());
+                        }
+                    }
+                    "error_description" => {
+                        if !value.is_empty() {
+                            error_description = Some(value.into_owned());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(error_code) = error {
+                anyhow::bail!(
+                    "OAuth authorization failed: {} ({})",
+                    error_code,
+                    error_description.as_deref().unwrap_or("no description")
+                );
+            }
+
+            let code = code.ok_or_else(|| anyhow!("missing 'code' parameter in OAuth callback"))?;
+            let state =
+                state.ok_or_else(|| anyhow!("missing 'state' parameter in OAuth callback"))?;
+
+            Ok(Self { code, state })
+        }
+    }
+
+    /// How long to wait for the browser to complete the OAuth flow before giving
+    /// up and releasing the loopback port.
+    const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+
+    /// Start a loopback HTTP server to receive the OAuth authorization callback.
+    ///
+    /// Binds to an ephemeral loopback port on `127.0.0.1` and serves `/callback`.
+    /// Returns `(redirect_uri, callback_future)`. The caller should use the
+    /// redirect URI in the authorization request, open the browser, then await
+    /// the future to receive the callback.
+    pub fn start_oauth_callback_server() -> Result<(
+        String,
+        futures::channel::oneshot::Receiver<Result<OAuthCallbackParams>>,
+    )> {
+        start_oauth_callback_server_with_path("127.0.0.1:0", "http://127.0.0.1", "/callback")
+    }
+
+    /// Start a loopback HTTP server with a custom bind address, public origin,
+    /// and callback path.
+    pub fn start_oauth_callback_server_with_path(
+        bind_address: &str,
+        redirect_origin: &str,
+        callback_path: &str,
+    ) -> Result<(
+        String,
+        futures::channel::oneshot::Receiver<Result<OAuthCallbackParams>>,
+    )> {
+        let callback_path_owned = callback_path.to_string();
+        let server = tiny_http::Server::http(bind_address).map_err(|e| {
+            anyhow!(e).context("Failed to bind loopback listener for OAuth callback")
+        })?;
+        let port = server
+            .server_addr()
+            .to_ip()
+            .ok_or_else(|| anyhow!("server not bound to a TCP address"))?
+            .port();
+
+        let redirect_uri = format!("{redirect_origin}:{port}{callback_path_owned}");
+
+        let (tx, rx) = futures::channel::oneshot::channel();
+
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + OAUTH_CALLBACK_TIMEOUT;
+
+            loop {
+                if tx.is_canceled() {
+                    return;
+                }
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    return;
+                }
+
+                let timeout = remaining.min(Duration::from_millis(500));
+                let Some(request) = (match server.recv_timeout(timeout) {
+                    Ok(req) => req,
+                    Err(_) => {
+                        let _ = tx.send(Err(anyhow!("OAuth callback server I/O error")));
+                        return;
+                    }
+                }) else {
+                    continue;
+                };
+
+                let result = handle_oauth_callback_request(&request, &callback_path_owned);
+
+                let (status_code, body) = match &result {
+                    Ok(_) => (
+                        200,
+                        oauth_callback_page(
+                            "Authorization Successful",
+                            "You can close this tab and return to Zed.",
+                            false,
+                        ),
+                    ),
+                    Err(err) => {
+                        log::error!("OAuth callback error: {}", err);
+                        (
+                            400,
+                            oauth_callback_page(
+                                "Authorization Failed",
+                                "Something went wrong. Please try again from Zed.",
+                                true,
+                            ),
+                        )
+                    }
+                };
+
+                let response = tiny_http::Response::from_string(body)
+                    .with_status_code(status_code)
+                    .with_header(
+                        tiny_http::Header::from_str("Content-Type: text/html")
+                            .expect("failed to construct response header"),
+                    )
+                    .with_header(
+                        tiny_http::Header::from_str("Keep-Alive: timeout=0,max=0")
+                            .expect("failed to construct response header"),
+                    );
+                if let Err(err) = request.respond(response) {
+                    log::error!("Failed to send OAuth callback response: {}", err);
+                }
+
+                let _ = tx.send(result);
+                return;
+            }
+        });
+
+        Ok((redirect_uri, rx))
+    }
+
+    fn handle_oauth_callback_request(
+        request: &tiny_http::Request,
+        callback_path: &str,
+    ) -> Result<OAuthCallbackParams> {
+        let url = Url::parse(&format!("http://localhost{}", request.url()))
+            .context("malformed callback request URL")?;
+
+        if url.path() != callback_path {
+            anyhow::bail!("unexpected path in OAuth callback: {}", url.path());
+        }
+
+        let query = url
+            .query()
+            .ok_or_else(|| anyhow!("OAuth callback has no query string"))?;
+        OAuthCallbackParams::parse_query(query)
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub use oauth_callback_server::{
+    OAuthCallbackParams, start_oauth_callback_server, start_oauth_callback_server_with_path,
+};
