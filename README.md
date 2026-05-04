@@ -1,4 +1,40 @@
-# Zed
+# Personal Zed Fork
+
+
+## What is in here
+
+This is my personal fork of Zed. It's based on version 1.1.6 and incorporates the following PRs:
+
+- [PR #53166](https://github.com/zed-industries/zed/pull/53166): Allows you to use your ChatGPT Codex subscription with the Zed Agent
+- ~~[PR #55085](https://github.com/zed-industries/zed/pull/55085): OpenCode Go interleaving thinking fix so that models like Kimi 2.6 and Deepseek v4 work properly.~~
+  - OpenCode is now officially supported
+
+The main benefit of this over using the ACP integration is that this allows you to use Zed's agent review features with these agents.
+
+In the past it was possible to do this with ACP, but that feature has recently been removed (See [Codex ACP issue #226](https://github.com/zed-industries/codex-acp/issues/226) and [Claude Code ACP issue #333](https://github.com/agentclientprotocol/claude-agent-acp/issues/333)).
+
+## How to use it
+
+### How to build it
+
+You can build it by cloning this fork and then running `./script/bundle-mac`.
+
+You may need to install various dependencies. For more info [check official development documentation here](https://github.com/zed-industries/zed/tree/main/docs/src/development).
+
+And you will need about 40gb in free space.
+
+After you build it, you will find the dmg with the `Zed.app` in `target/aarch64-apple-darwin/release/Zed-aarch64.dmg`. You can replace your original app with this version.
+
+### ChatGPT Codex Subscription with Zed Agent
+
+- Open the agent panel
+- Press the `...` button in the top right corner and select `Settings`
+- Scroll down under `LLM Providers` and find the `ChatGPT Subscription` section
+- Press the `Sign In`
+- Complete the authentication on the OpenAI website
+- Create a new with `Zed Agent` and the ChatGPT Subscription models will appear there
+
+## Original Readme
 
 [![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
 [![CI](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml/badge.svg)](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml)
